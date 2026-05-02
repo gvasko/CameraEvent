@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Reflection.Metadata;
 using System.Security.Policy;
@@ -31,99 +32,121 @@ public class CreateBlobVideoTags
     [Function(nameof(CreateBlobVideoTags))]
     public async Task Run([BlobTrigger("%CameraVideoBlobContainerName%/%CameraVideoPath%{name}", Source = BlobTriggerSource.EventGrid, Connection = "CameraVideoStorageConnection")] Stream stream, string name)
     {
-        _logger.LogInformation("Blob Trigger (using Event Grid) processed blob\n Name: {name}", name);
-
-        if (_cosmosContainer == null)
+        try
         {
-            _logger.LogError("CosmosDB container is not initialized. Check configuration.");
-            return;
+            _logger.LogInformation("Blob Trigger (using Event Grid) processed blob, name: {name}", name);
+
+            if (_cosmosContainer == null)
+            {
+                _logger.LogError("CosmosDB container is not initialized. Check configuration.");
+                return;
+            }
+
+            var blobNameComponents = name.Split('_');
+
+            if (blobNameComponents.Length < 3)
+            {
+                _logger.LogError("Invalid blob name");
+                return;
+            }
+
+            var cosmosId = blobNameComponents[1];
+            var cosmosPartitionKey = new PartitionKey(blobNameComponents[2]);
+
+            using var response = await _cosmosContainer.ReadItemStreamAsync(cosmosId, cosmosPartitionKey);
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogError("Cosmos item not found");
+            }
+            else if (response.IsSuccessStatusCode)
+            {
+                var videoMetadata = await JsonSerializer.DeserializeAsync<ObjectDetectionMetaDataDto>(response.Content);
+                _logger.LogInformation("Found metadata in cosmos: {metadata}", videoMetadata);
+
+                if (videoMetadata == null)
+                {
+                    _logger.LogInformation("Video metadata not received.");
+                    return;    
+                }
+
+                if (videoMetadata.IsProcessed)
+                {
+                    _logger.LogInformation("Already processed.");
+                    return;    
+                }
+
+                var tags = new Dictionary<string, string>();
+
+                var objectTypeTagValue = videoMetadata.ObjectType;
+                if (!string.IsNullOrEmpty(objectTypeTagValue))
+                {
+                    tags["ObjectType"] = objectTypeTagValue;
+                }
+
+                var cameraTagValue = videoMetadata.CameraId;
+                if (!string.IsNullOrEmpty(cameraTagValue))
+                {
+                    tags["Camera"] = cameraTagValue;
+                }
+                
+                var startTimeTagValue = videoMetadata.EventStartTime;
+                if (!string.IsNullOrEmpty(startTimeTagValue))
+                {
+                    var parsed = double.TryParse(startTimeTagValue, NumberStyles.Number, CultureInfo.InvariantCulture, out var timestampDouble);
+                    if (parsed)
+                    {
+                        DateTimeOffset utcTime = DateTimeOffset.UnixEpoch.AddSeconds(timestampDouble);
+                        tags["StartTime"] = utcTime.ToString("yyyy-MM-dd HH:mm:ss.ffffff UTC");
+                    }
+                    else
+                    {
+                        _logger.LogError("Could not parse start time: {time}", startTimeTagValue);
+                    }
+                }
+                
+                var endTimeTagValue = videoMetadata.EventEndTime;
+                if (!string.IsNullOrEmpty(endTimeTagValue))
+                {
+                    var parsed = double.TryParse(endTimeTagValue, NumberStyles.Number, CultureInfo.InvariantCulture, out var timestampDouble);
+                    if (parsed)
+                    {
+                        DateTimeOffset utcTime = DateTimeOffset.UnixEpoch.AddSeconds(timestampDouble);
+                        tags["EndTime"] = utcTime.ToString("yyyy-MM-dd HH:mm:ss.ffffff UTC");
+                    }
+                    else
+                    {
+                        _logger.LogError("Could not parse start time: {time}", endTimeTagValue);
+                    }
+                }
+                
+                var zonesTagValue = videoMetadata.Zones;
+                if (zonesTagValue != null && zonesTagValue.Length > 0)
+                {
+                    tags["Zones"] = string.Join(" ", zonesTagValue);
+                }
+                
+                var blobClient = _blobContainerClient.GetBlobClient($"detections/{name}");
+                await blobClient.SetMetadataAsync(tags);
+                _logger.LogInformation("Tags are successfully set");
+
+                List<PatchOperation> patchOperations = new List<PatchOperation>()
+                {
+                    PatchOperation.Replace("/isProcessed", true)
+                };
+                
+                var patchResponse = await _cosmosContainer.PatchItemAsync<ObjectDetectionMetaDataDto>(cosmosId, cosmosPartitionKey, patchOperations);
+                _logger.LogInformation("Metadata item patched: {status}", patchResponse.StatusCode);
+            }
+            else
+            {
+                _logger.LogError("Error checking existing record in CosmosDB for Event ID: {EventId}. Status Code: {StatusCode}", cosmosId, response.StatusCode);
+            }
         }
-
-        var blobNameComponents = name.Split('_');
-
-        if (blobNameComponents.Length < 3)
+        catch (Exception exc)
         {
-            _logger.LogError("Invalid blob name");
-            return;
-        }
-
-        var cosmosId = blobNameComponents[1];
-        var cosmosPartitionKey = new PartitionKey(blobNameComponents[2]);
-
-        using var response = await _cosmosContainer.ReadItemStreamAsync(cosmosId, cosmosPartitionKey);
-
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            _logger.LogError("Cosmos item not found");
-        }
-        else if (response.IsSuccessStatusCode)
-        {
-            var videoMetadata = await JsonSerializer.DeserializeAsync<ObjectDetectionMetaDataDto>(response.Content);
-            _logger.LogInformation("Found metadata in cosmos: {metadata}", videoMetadata);
-
-            if (videoMetadata == null)
-            {
-                _logger.LogInformation("Video metadata not received.");
-                return;    
-            }
-
-            if (videoMetadata.IsProcessed)
-            {
-                _logger.LogInformation("Already processed.");
-                return;    
-            }
-
-            var tags = new Dictionary<string, string>();
-
-            var objectTypeTagValue = videoMetadata.ObjectType;
-            if (!string.IsNullOrEmpty(objectTypeTagValue))
-            {
-                tags["ObjectType"] = objectTypeTagValue;
-            }
-
-            var cameraTagValue = videoMetadata.CameraId;
-            if (!string.IsNullOrEmpty(cameraTagValue))
-            {
-                tags["Camera"] = cameraTagValue;
-            }
-            
-            var startTimeTagValue = videoMetadata.EventStartTime;
-            if (!string.IsNullOrEmpty(startTimeTagValue))
-            {
-                double timestampDouble = double.Parse(startTimeTagValue, System.Globalization.CultureInfo.InvariantCulture);
-                DateTimeOffset utcTime = DateTimeOffset.UnixEpoch.AddSeconds(timestampDouble);
-                tags["StartTime"] = utcTime.ToString("yyyy-MM-dd HH:mm:ss.ffffff UTC");
-            }
-            
-            var endTimeTagValue = videoMetadata.EventEndTime;
-            if (!string.IsNullOrEmpty(endTimeTagValue))
-            {
-                double timestampDouble = double.Parse(endTimeTagValue, System.Globalization.CultureInfo.InvariantCulture);
-                DateTimeOffset utcTime = DateTimeOffset.UnixEpoch.AddSeconds(timestampDouble);
-                tags["EndTime"] = utcTime.ToString("yyyy-MM-dd HH:mm:ss.ffffff UTC");
-            }
-            
-            var zonesTagValue = videoMetadata.Zones;
-            if (zonesTagValue != null && zonesTagValue.Length > 0)
-            {
-                tags["Zones"] = string.Join(" ", zonesTagValue);
-            }
-            
-            var blobClient = _blobContainerClient.GetBlobClient($"detections/{name}");
-            await blobClient.SetMetadataAsync(tags);
-            _logger.LogInformation("Tags are successfully set");
-
-            List<PatchOperation> patchOperations = new List<PatchOperation>()
-            {
-                PatchOperation.Replace("/isProcessed", true)
-            };
-            
-            var patchResponse = await _cosmosContainer.PatchItemAsync<ObjectDetectionMetaDataDto>(cosmosId, cosmosPartitionKey, patchOperations);
-            _logger.LogInformation("Metadata item patched: {status}", patchResponse.StatusCode);
-        }
-        else
-        {
-            _logger.LogError("Error checking existing record in CosmosDB for Event ID: {EventId}. Status Code: {StatusCode}", cosmosId, response.StatusCode);
+            _logger.LogError(exc, "Error while processing name: {name}", name);
+            throw;
         }
     }
 }
