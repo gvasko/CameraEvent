@@ -38,16 +38,14 @@ public class CreateBlobVideoTags
 
             if (_cosmosContainer == null)
             {
-                _logger.LogError("CosmosDB container is not initialized. Check configuration.");
-                return;
+                throw new Exception("CosmosDB container is not initialized. Check configuration.");
             }
 
             var blobNameComponents = name.Split('_');
 
             if (blobNameComponents.Length < 3)
             {
-                _logger.LogError("Invalid blob name");
-                return;
+                throw new Exception($"Invalid blob name: {name}");
             }
 
             var cosmosId = blobNameComponents[1];
@@ -57,7 +55,7 @@ public class CreateBlobVideoTags
 
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
-                _logger.LogError("Cosmos item not found");
+                throw new Exception($"Cosmos item not found: {cosmosId}, {cosmosPartitionKey}");
             }
             else if (response.IsSuccessStatusCode)
             {
@@ -101,7 +99,7 @@ public class CreateBlobVideoTags
                     }
                     else
                     {
-                        _logger.LogError("Could not parse start time: {time}", startTimeTagValue);
+                        throw new Exception("Could not parse start time: {startTimeTagValue}");
                     }
                 }
                 
@@ -116,7 +114,7 @@ public class CreateBlobVideoTags
                     }
                     else
                     {
-                        _logger.LogError("Could not parse start time: {time}", endTimeTagValue);
+                        throw new Exception($"Could not parse start time: {endTimeTagValue}");
                     }
                 }
                 
@@ -140,13 +138,12 @@ public class CreateBlobVideoTags
             }
             else
             {
-                _logger.LogError("Error checking existing record in CosmosDB for Event ID: {EventId}. Status Code: {StatusCode}", cosmosId, response.StatusCode);
+                throw new Exception($"Error checking existing record in CosmosDB for Event ID: {cosmosId}. Status Code: {response.StatusCode}");
             }
         }
         catch (Exception exc)
         {
             _logger.LogError(exc, "Error while processing name: {name}", name);
-            throw;
         }
     }
 }

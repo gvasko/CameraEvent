@@ -26,10 +26,11 @@ public class CreateObejctDetectionMetaData
     {
         _logger.LogInformation("CreateObejctDetectionMetaData function started.");
 
+        try
+        {
         if (_cosmosContainer == null)
         {
-            _logger.LogError("CosmosDB container is not initialized. Check configuration.");
-            return new StatusCodeResult(StatusCodes.Status500InternalServerError);
+            throw new Exception("CosmosDB container is not initialized. Check configuration.");
         }
 
         var inputMetaData = await req.ReadFromJsonAsync<ObjectDetectionMetaDataDto>();
@@ -63,8 +64,13 @@ public class CreateObejctDetectionMetaData
         }
         else
         {
-            _logger.LogError("Error checking existing record in CosmosDB for Event ID: {EventId}. Status Code: {StatusCode}", inputMetaData.Id, response.StatusCode);
+            throw new Exception($"Error checking existing record in CosmosDB for Event ID: {inputMetaData.Id}. Status Code: {response.StatusCode}");
+        }
+        }
+        catch (Exception exc)
+        {
+            _logger.LogError(exc, "Error while processing metadata");
             return new StatusCodeResult(StatusCodes.Status500InternalServerError);
         }
-    }
+   }
 }
